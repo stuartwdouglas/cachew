@@ -517,7 +517,7 @@ func (s *Strategy) snapshotMutexFor(upstreamURL string) *sync.Mutex {
 func (s *Strategy) handleSnapshotRequest(w http.ResponseWriter, r *http.Request, host, pathValue string) { //nolint:funlen
 	start := time.Now()
 	repoPath := ExtractRepoPath(strings.TrimSuffix(pathValue, "/snapshot.tar.zst"))
-	upstreamURL := "https://" + host + "/" + repoPath
+	upstreamURL := gitUpstreamURL(host, repoPath)
 	repoName := host + "/" + repoPath
 
 	ctx, span := tracer.Start(r.Context(), "git.snapshot.serve",
@@ -699,7 +699,7 @@ func serveReaderFast(w http.ResponseWriter, r *http.Request, reader io.Reader) (
 func (s *Strategy) handleBundleRequest(w http.ResponseWriter, r *http.Request, host, pathValue string) { //nolint:funlen
 	start := time.Now()
 	repoPath := ExtractRepoPath(strings.TrimSuffix(pathValue, "/snapshot.bundle"))
-	upstreamURL := "https://" + host + "/" + repoPath
+	upstreamURL := gitUpstreamURL(host, repoPath)
 	repoName := host + "/" + repoPath
 
 	ctx, span := tracer.Start(r.Context(), "git.bundle.serve",
@@ -1708,7 +1708,7 @@ func (s *Strategy) handleLFSSnapshotRequest(w http.ResponseWriter, r *http.Reque
 	logger := logging.FromContext(ctx)
 
 	repoPath := ExtractRepoPath(strings.TrimSuffix(pathValue, "/lfs-snapshot.tar.zst"))
-	upstreamURL := "https://" + host + "/" + repoPath
+	upstreamURL := gitUpstreamURL(host, repoPath)
 	cacheKey := lfsSnapshotCacheKey(upstreamURL)
 
 	// Try cache first so we can serve even when the mirror isn't ready (cold start).

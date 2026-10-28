@@ -280,7 +280,7 @@ func (m *Manager) DiscoverExisting(ctx context.Context) ([]*Repository, error) {
 		if !found {
 			return nil
 		}
-		upstreamURL := "https://" + host + "/" + repoPath
+		upstreamURL := (&url.URL{Scheme: "https", Host: host, Path: "/" + repoPath}).String()
 
 		repo, err := m.GetOrCreate(ctx, upstreamURL)
 		if err != nil {
@@ -308,7 +308,7 @@ func RepoPathFromURL(upstreamURL string) (string, error) {
 		return "", errors.Wrap(err, "parse upstream URL")
 	}
 	if parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" ||
-		parsed.Fragment != "" || strings.ContainsAny(parsed.Host, `/\`) {
+		parsed.Fragment != "" || strings.HasPrefix(parsed.Host, ".") || strings.ContainsAny(parsed.Host, `/\%?#@`) {
 		return "", errors.Errorf("unsupported upstream URL %q", upstreamURL)
 	}
 	repoPath := strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(parsed.Path, "/"), "/"), ".git")
@@ -316,7 +316,7 @@ func RepoPathFromURL(upstreamURL string) (string, error) {
 		return "", errors.Errorf("upstream URL %q has no repository path", upstreamURL)
 	}
 	for segment := range strings.SplitSeq(repoPath, "/") {
-		if segment == "" || segment == "." || segment == ".." || strings.Contains(segment, `\`) {
+		if segment == "" || segment == "." || segment == ".." || strings.ContainsAny(segment, "\\\x00") {
 			return "", errors.Errorf("unsupported upstream URL path %q", parsed.Path)
 		}
 	}

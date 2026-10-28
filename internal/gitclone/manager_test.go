@@ -132,10 +132,29 @@ func TestRepoPathFromURLRejectsTraversal(t *testing.T) {
 		"https://github.com/../../tmp/repo",
 		"https://github.com/%2e%2e/%2e%2e/tmp/repo",
 		"https://github.com/org/repo%2f..%2f..%2ftmp/repo",
+		"https://./org/repo",
+		"https://.snapshots/org/repo",
+		"https://github.com/org/.%2e/repo",
+		"https://github.com/org%2F%2E%2e%2Frepo",
+		"https://github.com/org/%5c..%5crepo",
 	} {
 		_, err := RepoPathFromURL(upstream)
 		assert.Error(t, err)
 	}
+}
+
+func TestManager_DiscoverExistingPreservesEscapedPaths(t *testing.T) {
+	_, ctx := logging.Configure(t.Context(), logging.Config{Level: slog.LevelError})
+	mirrorRoot := t.TempDir()
+	mirrorPath := filepath.Join(mirrorRoot, "example.test", "org", "repo%2ename")
+	assert.NoError(t, exec.Command("git", "init", "--bare", mirrorPath).Run())
+	manager, err := NewManager(ctx, Config{MirrorRoot: mirrorRoot}, nil)
+	assert.NoError(t, err)
+	repos, err := manager.DiscoverExisting(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(repos))
+	assert.Equal(t, mirrorPath, repos[0].Path())
+	assert.Equal(t, "https://example.test/org/repo%252ename", repos[0].UpstreamURL())
 }
 
 func TestConfigureMirrorSanitizesExecutableMetadata(t *testing.T) {

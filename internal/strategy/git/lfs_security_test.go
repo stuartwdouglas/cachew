@@ -2,6 +2,8 @@ package git //nolint:testpackage // white-box testing is required for process-bo
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -96,6 +98,47 @@ func TestRestoreMirrorSnapshotSanitizesCachedCode(t *testing.T) {
 	assert.Error(t, cmd.Run())
 	_, err = os.Lstat(proofPath)
 	assert.True(t, os.IsNotExist(err))
+}
+
+func TestBackendUsesValidatedMirror(t *testing.T) {
+	_, ctx := logging.Configure(t.Context(), logging.Config{})
+	mirrorRoot := t.TempDir()
+	mirrorPath := filepath.Join(mirrorRoot, "example.test", "org", "repo")
+	assert.NoError(t, exec.Command("git", "init", "--bare", mirrorPath).Run())
+	manager, err := gitclone.NewManager(ctx, gitclone.Config{MirrorRoot: mirrorRoot}, nil)
+	assert.NoError(t, err)
+	repo, err := manager.GetOrCreate(ctx, "https://example.test/org/repo")
+	assert.NoError(t, err)
+	strategy := &Strategy{cloneManager: manager}
+	for _, path := range []string{"org/repo.git.git/info/refs", "org/repo%2ename/info/refs", "org/repo/info/refs/other/info/refs"} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/git/example.test/"+path, nil)
+			req.SetPathValue("host", "example.test")
+			req.SetPathValue("path", path)
+			response := httptest.NewRecorder()
+			assert.False(t, strategy.serveFromBackend(response, req, repo))
+			assert.Equal(t, http.StatusOK, response.Code)
+		})
+	}
+}
+
+func TestGitUpstreamURLPreservesDecodedPath(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{"org/repo%2ename", "https://example.test/org/repo%252ename"},
+		{"org/repo?query", "https://example.test/org/repo%3Fquery"},
+		{"org/repo#fragment", "https://example.test/org/repo%23fragment"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			upstream := gitUpstreamURL("example.test", test.path)
+			assert.Equal(t, test.want, upstream)
+			path, err := gitclone.RepoPathFromURL(upstream)
+			assert.NoError(t, err)
+			assert.Equal(t, filepath.Join("example.test", test.path), path)
+		})
+	}
 }
 
 func TestCloneForSnapshotIgnoresHostConfiguration(t *testing.T) {

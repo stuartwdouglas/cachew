@@ -96,31 +96,29 @@ func (s *Strategy) serveFromBackend(w http.ResponseWriter, r *http.Request, repo
 		return false
 	}
 
-	absRoot, err := filepath.Abs(s.cloneManager.Config().MirrorRoot)
+	absRepoPath, err := filepath.Abs(repo.Path())
 	if err != nil {
 		httputil.ErrorResponse(w, r, http.StatusInternalServerError, "failed to get absolute path")
 		return false
 	}
 
-	host := r.PathValue("host")
 	pathValue := r.PathValue("path")
 
 	var gitOperation string
-	var repoPathWithSuffix string
 
 	for _, op := range []string{"/info/refs", "/git-upload-pack", "/git-receive-pack"} {
-		if idx := strings.Index(pathValue, op); idx != -1 {
-			repoPathWithSuffix = pathValue[:idx]
-			gitOperation = pathValue[idx:]
+		if strings.HasSuffix(pathValue, op) {
+			gitOperation = op
 			break
 		}
 	}
-
-	repoPath := strings.TrimSuffix(repoPathWithSuffix, ".git")
-	backendPath := "/" + host + "/" + repoPath + gitOperation
+	if gitOperation == "" {
+		http.Error(w, "invalid Git operation", http.StatusBadRequest)
+		return false
+	}
 
 	logger.DebugContext(r.Context(), "Serving with git http-backend", "original_path", r.URL.Path,
-		"backend_path", backendPath, "clone_path", repo.Path())
+		"backend_path", gitOperation, "clone_path", repo.Path())
 
 	// No read lock needed: git http-backend (upload-pack) handles concurrent
 	// access safely via git's own file-level locking. Holding a read lock here
@@ -138,13 +136,14 @@ func (s *Strategy) serveFromBackend(w http.ResponseWriter, r *http.Request, repo
 
 	var stderrBuf bytes.Buffer
 
-	// Host Git configuration is unrelated to serving mirrors and can add command-backed upload-pack behavior.
+	// Use the validated mirror as CGI's root so request decoding cannot select a different directory.
+	// Host Git configuration can also add command-backed upload-pack behavior unrelated to serving mirrors.
 	handler := &cgi.Handler{
 		Path:   gitPath,
 		Args:   []string{"http-backend"},
 		Stderr: &stderrBuf,
 		Env: []string{
-			"GIT_PROJECT_ROOT=" + absRoot,
+			"GIT_PROJECT_ROOT=" + absRepoPath,
 			"GIT_HTTP_EXPORT_ALL=1",
 			"GIT_HTTP_MAX_REQUEST_BUFFER=100M",
 			"GIT_CONFIG_NOSYSTEM=1",
@@ -154,7 +153,8 @@ func (s *Strategy) serveFromBackend(w http.ResponseWriter, r *http.Request, repo
 	}
 
 	r2 := r.Clone(r.Context())
-	r2.URL.Path = backendPath
+	r2.URL.Path = gitOperation
+	r2.URL.RawPath = ""
 
 	// Go's cgi.Handler rejects chunked request bodies with a 400.
 	// Buffer the body so we can set ContentLength and clear TransferEncoding.
@@ -173,7 +173,7 @@ func (s *Strategy) serveFromBackend(w http.ResponseWriter, r *http.Request, repo
 
 	if stderrBuf.Len() > 0 {
 		stderr := stderrBuf.String()
-		logger.ErrorContext(r.Context(), "git http-backend error", "stderr", stderr, "path", backendPath)
+		logger.ErrorContext(r.Context(), "git http-backend error", "stderr", stderr, "path", gitOperation)
 		if !bw.committed && strings.Contains(stderr, "not our ref") {
 			return true
 		}

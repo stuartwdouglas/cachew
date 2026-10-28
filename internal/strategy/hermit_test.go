@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,8 +15,86 @@ import (
 	"github.com/block/cachew/internal/cache"
 	"github.com/block/cachew/internal/githubapp"
 	"github.com/block/cachew/internal/logging"
+	"github.com/block/cachew/internal/opa"
 	"github.com/block/cachew/internal/strategy"
 )
+
+func TestHermitReleaseRejectsTraversal(t *testing.T) {
+	_, ctx := logging.Configure(t.Context(), logging.Config{Level: slog.LevelError})
+	backendMux := http.NewServeMux()
+	internalHits := 0
+	backendMux.HandleFunc("GET /api/v1/namespaces", func(w http.ResponseWriter, _ *http.Request) {
+		internalHits++
+		_, _ = w.Write([]byte("internal data"))
+	})
+	backendHandler, err := opa.Middleware(ctx, opa.Config{}, backendMux)
+	assert.NoError(t, err)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendHandler.ServeHTTP(w, r.WithContext(ctx))
+	}))
+	defer backend.Close()
+
+	memCache, err := cache.NewMemory(ctx, cache.MemoryConfig{MaxTTL: time.Hour})
+	assert.NoError(t, err)
+	t.Cleanup(func() { memCache.Close() })
+	mux := http.NewServeMux()
+	_, err = strategy.NewHermit(ctx, strategy.HermitConfig{GitHubBaseURL: backend.URL + "/github.com"}, nil, memCache, mux)
+	assert.NoError(t, err)
+	mux.Handle("GET /api/v1/namespaces", backendMux)
+	publicHandler, err := opa.Middleware(ctx, opa.Config{}, mux)
+	assert.NoError(t, err)
+	direct := httptest.NewRecorder()
+	publicHandler.ServeHTTP(direct, httptest.NewRequestWithContext(ctx, http.MethodGet, "/api/v1/namespaces", nil))
+	assert.Equal(t, http.StatusForbidden, direct.Code)
+
+	for _, parent := range []string{"%2e%2e/", "%2E%2e/", ".%2e/", "%2e%2e%2f", "%2e%2e%2F"} {
+		t.Run(parent, func(t *testing.T) {
+			target := "/hermit/github.com/org/repo/releases/download/" + strings.Repeat(parent, 5) + "api/v1/namespaces"
+			req := httptest.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+			response := httptest.NewRecorder()
+			publicHandler.ServeHTTP(response, req)
+			assert.Equal(t, http.StatusBadRequest, response.Code)
+			assert.Equal(t, 0, internalHits)
+		})
+	}
+}
+
+func TestHermitReleasePreservesEscapedPath(t *testing.T) {
+	_, ctx := logging.Configure(t.Context(), logging.Config{Level: slog.LevelError})
+	backendMux := http.NewServeMux()
+	var receivedPath, receivedQuery string
+	backendMux.HandleFunc("GET /github.com/{org}/{repo}/releases/download/{path...}", func(w http.ResponseWriter, r *http.Request) {
+		receivedPath = r.PathValue("path")
+		receivedQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte("release"))
+	})
+	backend := httptest.NewServer(backendMux)
+	defer backend.Close()
+	memCache, err := cache.NewMemory(ctx, cache.MemoryConfig{MaxTTL: time.Hour})
+	assert.NoError(t, err)
+	t.Cleanup(func() { memCache.Close() })
+	mux := http.NewServeMux()
+	_, err = strategy.NewHermit(ctx, strategy.HermitConfig{GitHubBaseURL: backend.URL + "/github.com"}, nil, memCache, mux)
+	assert.NoError(t, err)
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{"release%2Fv1/file.tar.gz", "release/v1/file.tar.gz"},
+		{"v1/%252e%252e%252fapi", "v1/%2e%2e%2fapi"},
+		{"v1/file%3fdownload=1", "v1/file?download=1"},
+		{"v1/file%23fragment", "v1/file#fragment"},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/hermit/github.com/org/repo/releases/download/"+test.path, nil)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, req)
+			assert.Equal(t, http.StatusOK, response.Code)
+			assert.Equal(t, test.want, receivedPath)
+			assert.Equal(t, "", receivedQuery)
+		})
+	}
+}
 
 // httpTransportMutexHermit ensures hermit tests don't run in parallel
 // since they modify the global http.DefaultTransport
