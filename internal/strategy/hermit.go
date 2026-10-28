@@ -67,7 +67,7 @@ func NewHermit(ctx context.Context, config HermitConfig, _ jobscheduler.Schedule
 	if config.GitHubBaseURL != "" {
 		isInternalRedirect := config.GitHubBaseURL == defaultGitHubBaseURL
 		s.redirectHandler = s.createRedirectHandler(isInternalRedirect, c)
-		mux.Handle("GET /hermit/github.com/{org}/{repo}/releases/download/{path...}", s.redirectHandler)
+		mux.Handle("GET /hermit/github.com/{org}/{repo}/releases/download/{path...}", validateGitHubReleaseRequest("path", s.redirectHandler))
 		logger.InfoContext(ctx, "Hermit strategy initialized", "github_base_url", config.GitHubBaseURL,
 			"internal_redirect", isInternalRedirect)
 	} else {
@@ -118,17 +118,20 @@ func (s *Hermit) githubReleasePath(r *http.Request) string {
 }
 
 func (s *Hermit) buildGitHubURL(r *http.Request) string {
-	return buildURL("https", "github.com", s.githubReleasePath(r), r.URL.RawQuery)
+	return buildURL("github.com", s.githubReleasePath(r), r.URL.RawQuery)
 }
 
 func (s *Hermit) buildRedirectRequest(r *http.Request) (*http.Request, error) {
-	path := ensureLeadingSlash(s.githubReleasePath(r))
-	redirectURL := s.config.GitHubBaseURL + path
-	if r.URL.RawQuery != "" {
-		redirectURL += "?" + r.URL.RawQuery
+	// Wildcards are already decoded; parsing them again can turn release names into routes on the trusted loopback server.
+	redirectURL, err := url.Parse(s.config.GitHubBaseURL)
+	if err != nil {
+		return nil, errors.Wrap(err, "parse GitHub redirect base URL")
 	}
+	redirectURL.Path += ensureLeadingSlash(s.githubReleasePath(r))
+	redirectURL.RawPath = ""
+	redirectURL.RawQuery = r.URL.RawQuery
 
-	req, err := http.NewRequestWithContext(r.Context(), r.Method, redirectURL, nil)
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, redirectURL.String(), nil)
 	if err != nil {
 		return nil, errors.Wrap(err, "create internal redirect request")
 	}
@@ -150,12 +153,12 @@ func (s *Hermit) buildDirectRequest(r *http.Request) (*http.Request, error) {
 }
 
 func (s *Hermit) buildOriginalURL(r *http.Request) string {
-	return buildURL("https", r.PathValue("host"), r.PathValue("path"), r.URL.RawQuery)
+	return buildURL(r.PathValue("host"), r.PathValue("path"), r.URL.RawQuery)
 }
 
-func buildURL(scheme, host, path, query string) string {
+func buildURL(host, path, query string) string {
 	u := &url.URL{
-		Scheme:   scheme,
+		Scheme:   "https",
 		Host:     host,
 		Path:     ensureLeadingSlash(path),
 		RawQuery: query,

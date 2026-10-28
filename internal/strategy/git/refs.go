@@ -49,7 +49,7 @@ func (s *Strategy) handleEnsureRefs(w http.ResponseWriter, r *http.Request, host
 	start := time.Now()
 	repoPath := strings.TrimSuffix(pathValue, EnsureRefsPath)
 	repoPath = strings.TrimSuffix(repoPath, ".git")
-	upstreamURL := "https://" + host + "/" + repoPath
+	upstreamURL := gitUpstreamURL(host, repoPath)
 	repoName := host + "/" + repoPath
 
 	ctx, span := tracer.Start(r.Context(), "git.ensure_refs",

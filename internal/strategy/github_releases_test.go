@@ -155,6 +155,28 @@ func TestGitHubReleasesPublicRepo(t *testing.T) {
 	assert.Equal(t, 1, mock.publicCallCount, "second request should be served from cache")
 }
 
+func TestGitHubReleasesRejectsTraversal(t *testing.T) {
+	mock, mux, ctx := setupTest(t, strategy.GitHubReleasesConfig{})
+	for _, path := range []string{
+		"org/repo/releases/download/%2e%2e/api",
+		"org/repo/releases/download/.%2E/api",
+		"org/repo/releases/download/%2e%2e%2fapi",
+		"org%2fother/repo/releases/download/v1/file",
+		"org/repo%2fother/releases/download/v1/file",
+		"org/%2e%2e/releases/download/v1/file",
+		"org/repo/releases/download/v1/%5c..%5capi",
+	} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequestWithContext(ctx, http.MethodGet, "/github.com/"+path, nil)
+			response := httptest.NewRecorder()
+			mux.ServeHTTP(response, req)
+			assert.Equal(t, http.StatusBadRequest, response.Code)
+		})
+	}
+	assert.Equal(t, 0, mock.publicCallCount)
+	assert.Equal(t, 0, mock.apiCallCount)
+}
+
 func TestGitHubReleasesSlashedReleaseTag(t *testing.T) {
 	mock, mux, ctx := setupTest(t, strategy.GitHubReleasesConfig{})
 

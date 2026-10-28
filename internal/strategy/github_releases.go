@@ -3,7 +3,6 @@ package strategy
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -64,7 +63,7 @@ func NewGitHubReleases(ctx context.Context, config GitHubReleasesConfig, cache c
 			org := r.PathValue("org")
 			repo := r.PathValue("repo")
 			rest := r.PathValue("rest")
-			return fmt.Sprintf("https://github.com/%s/%s/releases/download/%s", org, repo, rest)
+			return buildURL("github.com", org+"/"+repo+"/releases/download/"+rest, "")
 		}).
 		Transform(func(r *http.Request) (*http.Request, error) {
 			org := r.PathValue("org")
@@ -72,7 +71,7 @@ func NewGitHubReleases(ctx context.Context, config GitHubReleasesConfig, cache c
 			release, file := splitReleasePath(r.PathValue("rest"))
 			return s.downloadRelease(r.Context(), org, repo, release, file)
 		})
-	mux.Handle("GET /github.com/{org}/{repo}/releases/download/{rest...}", h)
+	mux.Handle("GET /github.com/{org}/{repo}/releases/download/{rest...}", validateGitHubReleaseRequest("rest", h))
 	return s, nil
 }
 
@@ -130,7 +129,7 @@ func (g *GitHubReleases) downloadRelease(ctx context.Context, org, repo, release
 		"release", release,
 		"file", file)
 
-	realURL := fmt.Sprintf("https://github.com/%s/%s/releases/download/%s/%s", org, repo, release, file)
+	realURL := buildURL("github.com", org+"/"+repo+"/releases/download/"+release+"/"+file, "")
 	if !isPrivate {
 		// Public release - use direct download URL
 		logger.DebugContext(ctx, "Using public download URL")
@@ -143,7 +142,7 @@ func (g *GitHubReleases) downloadRelease(ctx context.Context, org, repo, release
 
 	// Use GitHub API to get release info and find the asset
 	logger.DebugContext(ctx, "Using GitHub API for private release")
-	apiURL := fmt.Sprintf("https://api.github.com/repos/%s/%s/releases/tags/%s", org, repo, release)
+	apiURL := buildURL("api.github.com", "repos/"+org+"/"+repo+"/releases/tags/"+release, "")
 	req, err := g.newGitHubRequest(ctx, apiURL, "application/vnd.github+json", org)
 	if err != nil {
 		return nil, httputil.Errorf(http.StatusInternalServerError, "create API request")

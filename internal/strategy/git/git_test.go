@@ -143,6 +143,34 @@ func TestIsGitRequest(t *testing.T) {
 	}
 }
 
+func TestGitRejectsEncodedTraversal(t *testing.T) {
+	fixture := newInfoRefsFixture(t)
+	mux := http.NewServeMux()
+	mux.Handle("GET /git/{host}/{path...}", fixture.handler)
+	mux.Handle("POST /git/{host}/{path...}", fixture.uploadPack)
+	for _, prefix := range []string{
+		"example.test/org/%2e%2e/repo",
+		"example.test/org/.%2E/repo",
+		"example.test/org%2f..%2f..%2frepo",
+		"example.test/org%2F%2E%2e%2Frepo",
+		"example.test/org/%2e/repo",
+		"example.test/org/%5c..%5crepo",
+		"example.test%2f..%2f../org/repo",
+		"%2e/org/repo",
+		"%2esnapshots/org/repo",
+	} {
+		for _, endpoint := range []string{"info/refs", "git-upload-pack", "snapshot.tar.zst", "snapshot.bundle", "lfs-snapshot.tar.zst", "ensure-refs", "info/lfs/objects/batch"} {
+			t.Run(prefix+"/"+endpoint, func(t *testing.T) {
+				req := httptest.NewRequestWithContext(fixture.ctx, http.MethodGet, "/git/"+prefix+"/"+endpoint, nil)
+				response := httptest.NewRecorder()
+				mux.ServeHTTP(response, req)
+				assert.Equal(t, http.StatusBadRequest, response.Code)
+			})
+		}
+	}
+	assert.Equal(t, int32(0), fixture.transport.hits.Load())
+}
+
 func TestExtractRepoPath(t *testing.T) {
 	tests := []struct {
 		name     string

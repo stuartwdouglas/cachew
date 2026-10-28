@@ -11,6 +11,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -200,6 +201,7 @@ func New(
 			req.URL.Scheme = "https"
 			req.URL.Host = req.PathValue("host")
 			req.URL.Path = "/" + req.PathValue("path")
+			req.URL.RawPath = ""
 			req.Host = req.URL.Host
 
 			// Inject GitHub App authentication for github.com requests
@@ -349,6 +351,10 @@ func (s *Strategy) handleRequest(w http.ResponseWriter, r *http.Request) {
 
 	host := r.PathValue("host")
 	pathValue := r.PathValue("path")
+	if _, err := gitclone.RepoPathFromURL(gitUpstreamURL(host, pathValue)); err != nil {
+		http.Error(w, "invalid Git path", http.StatusBadRequest)
+		return
+	}
 
 	logger.DebugContext(ctx, "Git request", "method", r.Method, "host", host, "path", pathValue)
 
@@ -404,7 +410,7 @@ func (s *Strategy) handleGitRequest(w http.ResponseWriter, r *http.Request, host
 	logger := logging.FromContext(ctx)
 
 	repoPath := ExtractRepoPath(pathValue)
-	upstreamURL := "https://" + host + "/" + repoPath
+	upstreamURL := gitUpstreamURL(host, repoPath)
 
 	repo, err := s.cloneManager.GetOrCreate(ctx, upstreamURL)
 	if err != nil {
@@ -631,6 +637,11 @@ func (s *Strategy) serveWithSpool(w http.ResponseWriter, r *http.Request, host, 
 func isGitRequest(pathValue string) bool {
 	return strings.HasSuffix(pathValue, "/info/refs") ||
 		strings.HasSuffix(pathValue, "/git-upload-pack")
+}
+
+func gitUpstreamURL(host, repoPath string) string {
+	upstream := url.URL{Scheme: "https", Host: host, Path: "/" + repoPath}
+	return upstream.String()
 }
 
 func ExtractRepoPath(pathValue string) string {
